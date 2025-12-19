@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Simulador de Autômatos - Completo</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', 
+               sans-serif; background-color: #f0f2f5; 
+               padding: 20px; }
+        .main-container { max-width: 1200px; 
+                          margin: auto; }
+        .flex-container { display: flex; 
+                          gap: 20px; 
+                          flex-wrap: wrap; }
+        .panel { background: white; 
+                 padding: 20px; 
+                 border-radius: 10px; 
+                 box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
+                 flex: 1; 
+                 min-width: 300px; }
+        .viz-panel { flex: 2; 
+                     display: flex; 
+                     flex-direction: column; 
+                     gap: 20px; }
+        textarea, input { width: 100%; 
+                          padding: 10px; margin: 8px 0; 
+                          border: 1px solid #ccc; 
+                          border-radius: 5px; 
+                          box-sizing: border-box; 
+                          font-family: monospace; }
+        button { width: 100%; 
+                 padding: 12px; 
+                 border: none; 
+                 border-radius: 5px; 
+                 cursor: pointer; 
+                 font-weight: bold; 
+                 transition: 0.3s; 
+                 margin-bottom: 10px; }
+        .btn-afd { background: #007bff; 
+                   color: white; }
+        .btn-min { background: #6f42c1; 
+                   color: white; }
+        button:hover { opacity: 0.8; }
+        .graph-box { background: white; 
+                     border: 1px solid #ddd; 
+                     border-radius: 10px; 
+                     padding: 15px; 
+                     min-height: 250px; }
+        h3 { margin-top: 0; 
+             color: #333; 
+             border-bottom: 2px solid #eee; 
+             padding-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="main-container">
+    <h1 style="text-align:center;">Simulador de Autômatos: AFN ➔ AFD ➔ Minimização</h1>
+
+    <div class="flex-container">
+        <div class="panel">
+            <h3>Configuração (AFN)</h3>
+            <label>Alfabeto:</label><input type="text" id="alfabeto" value="a,b">
+            <label>Inicial:</label><input type="text" id="inicial" value="q0">
+            <label>Finais:</label><input type="text" id="finais" value="q2">
+            <label>Transições (origem,símbolo,destino):</label>
+            <textarea id="transicoes" rows="8">q0,a,q0
+q0,a,q1
+q0,b,q0
+q1,b,q2</textarea>
+            <button class="btn-afd" onclick="executarConversao()">1. Converter para AFD</button>
+            <button class="btn-min" onclick="executarMinimizacao()">2. Minimizar AFD Gerado</button>
+        </div>
+
+        <div class="viz-panel">
+            <div class="panel">
+                <h3>Resultado: AFD (Letra A)</h3>
+                <div id="viz-afd" class="graph-box"></div>
+            </div>
+            <div class="panel">
+                <h3>Resultado: AFD Minimizado (Letra B)</h3>
+                <div id="viz-min" class="graph-box"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    mermaid.initialize({ startOnLoad: false });
+    let globalAFD = null;
+
+    function limparID(str) { return str.replace(/[{}]/g, "").replace(/,/g, "_"); }
+
+    async function renderizar(afd, containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = "";
+        if (!afd) return;
+
+        let code = "graph LR\n";
+        code += `    START(( )) --> ${limparID(afd.inicial)}\n`;
+        code += `    style START fill:#fff,stroke:#fff\n`;
+
+        for (let origem in afd.transicoes) {
+            let o = limparID(origem);
+            for (let simbolo in afd.transicoes[origem]) {
+                let d = limparID(afd.transicoes[origem][simbolo]);
+                code += `    ${o} -- ${simbolo} --> ${d}\n`;
+            }
+        }
+        afd.finais.forEach(f => {
+            code += `    style ${limparID(f)} stroke-width:4px, stroke:#28a745\n`;
+        });
+
+        const { svg } = await mermaid.render('svg-' + containerId, code);
+        container.innerHTML = svg;
+    }
+
+    function executarConversao() {
+        const alfabeto = document.getElementById('alfabeto').value.split(',').map(s => s.trim());
+        const inicial = document.getElementById('inicial').value.trim();
+        const finaisAFN = document.getElementById('finais').value.split(',').map(s => s.trim());
+        const transicoesAFN = {};
+        
+        document.getElementById('transicoes').value.split('\n').forEach(l => {
+            const [o, s, d] = l.split(',').map(x => x.trim());
+            if (o && s && d) {
+                if (!transicoesAFN[o]) transicoesAFN[o] = {};
+                if (!transicoesAFN[o][s]) transicoesAFN[o][s] = [];
+                transicoesAFN[o][s].push(d);
+            }
+        });
+
+        const afn = { alfabeto, inicial, finais: finaisAFN, transicoes: transicoesAFN };
+        globalAFD = converterAFNparaAFD(afn);
+        renderizar(globalAFD, 'viz-afd');
+    }
+
+    function converterAFNparaAFD(afn) {
+        let mapeamento = {}, transAFD = {}, finaisAFD = [], fila = [[afn.inicial]], visitados = new Set();
+        const getNome = (conj) => {
+            let id = conj.sort().join(',');
+            if (!mapeamento[id]) mapeamento[id] = "Q" + Object.keys(mapeamento).length + "{" + (id||"vazio") + "}";
+            return mapeamento[id];
+        };
+
+        while (fila.length > 0) {
+            let conj = fila.shift();
+            let nome = getNome(conj);
+            if (visitados.has(nome)) continue;
+            visitados.add(nome);
+            if (conj.some(e => afn.finais.includes(e))) finaisAFD.push(nome);
+            transAFD[nome] = {};
+
+            afn.alfabeto.forEach(s => {
+                let prox = new Set();
+                conj.forEach(e => (afn.transicoes[e]?.[s] || []).forEach(d => prox.add(d)));
+                if (prox.size > 0) {
+                    let listaProx = Array.from(prox);
+                    let nomeProx = getNome(listaProx);
+                    transAFD[nome][s] = nomeProx;
+                    if (!visitados.has(nomeProx)) fila.push(listaProx);
+                }
+            });
+        }
+        return { transicoes: transAFD, inicial: getNome([afn.inicial]), finais: finaisAFD, alfabeto: afn.alfabeto, estados: Array.from(visitados) };
+    }
+
+    function executarMinimizacao() {
+        if (!globalAFD) return alert("Converta primeiro para AFD!");
+        const afdMin = minimizarAFD(globalAFD);
+        renderizar(afdMin, 'viz-min');
+    }
+
+    function minimizarAFD(afd) {
+      
+        let P = [
+            afd.estados.filter(e => afd.finais.includes(e)),
+            afd.estados.filter(e => !afd.finais.includes(e))
+        ].filter(g => g.length > 0);
+
+        let mudou = true;
+        while (mudou) {
+            mudou = false;
+            let novaP = [];
+            for (let grupo of P) {
+                let subdivisao = [];
+                for (let estado of grupo) {
+                    let colocado = false;
+                    for (let sub of subdivisao) {
+                      
+                        let igual = afd.alfabeto.every(simb => {
+                            let d1 = afd.transicoes[estado]?.[simb];
+                            let d2 = afd.transicoes[sub[0]]?.[simb];
+                            
+                            return P.findIndex(g => g.includes(d1)) === P.findIndex(g => g.includes(d2));
+                        });
+                        if (igual) { sub.push(estado); colocado = true; break; }
+                    }
+                    if (!colocado) subdivisao.push([estado]);
+                }
+                novaP.push(...subdivisao);
+                if (subdivisao.length > 1) mudou = true;
+            }
+            P = novaP;
+        }
+
+        let nomeGrupo = (est) => "M" + P.findIndex(g => g.includes(est));
+        let novasTrans = {}, novosFinais = new Set();
+        P.forEach(g => {
+            let representante = g[0];
+            let nomeM = nomeGrupo(representante);
+            novasTrans[nomeM] = {};
+            if (afd.finais.includes(representante)) novosFinais.add(nomeM);
+            afd.alfabeto.forEach(s => {
+                let dest = afd.transicoes[representante]?.[s];
+                if (dest) novasTrans[nomeM][s] = nomeGrupo(dest);
+            });
+        });
+
+        return { transicoes: novasTrans, inicial: nomeGrupo(afd.inicial), finais: Array.from(novosFinais) };
+    }
+</script>
+</body>
+</html>
